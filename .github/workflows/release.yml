@@ -1,0 +1,36 @@
+name: Release FileDock
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-release:
+    name: Verify & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: curl, json, mbstring, zip
+
+      - name: Run PHP syntax check
+        run: php -l filedock.php
+
+      - name: Run FileDock QA suite (Compliance, Unit, HTTP E2E)
+        run: php tests/run.php
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: filedock.php
+          generate_release_notes: true
