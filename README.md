@@ -4,17 +4,17 @@
 
 **Single-file PHP file manager for shared hosting, VPS, and local servers.**
 
-[![PHP 7.4–8.x](https://img.shields.io/badge/PHP-7.4--8.x-4F5B93?style=flat-square)](https://www.php.net/)
-[![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-0F766E?style=flat-square)](#why-filedock)
-[![Single File](https://img.shields.io/badge/Single--File-~246%20KB-111317?style=flat-square)](#quick-start)
-[![MIT License](https://img.shields.io/badge/License-MIT-646B78?style=flat-square)](LICENSE)
+[![PHP 7.4–8.x](https://badgen.net/badge/PHP/7.4-8.x/4F5B93)](https://www.php.net/)
+[![Zero Dependencies](https://badgen.net/badge/Dependencies/Zero/0F766E)](#why-filedock)
+[![Single File](https://badgen.net/badge/Single-File/~246%20KB/111317)](#quick-start)
+[![MIT License](https://badgen.net/badge/License/MIT/646B78)](LICENSE)
 
 <br>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/962a2e0e-e452-4d4b-a68d-ce7058827e71">
-  <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/c78629e4-5f7f-44a1-8aa5-0ad6830d4129">
-  <img alt="FileDock workspace preview" src="https://github.com/user-attachments/assets/c78629e4-5f7f-44a1-8aa5-0ad6830d4129" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/36ac7656-4052-4a0a-b94e-fae917b287d8">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/94c59a9d-6b50-43ba-a366-1aa0c72cf938">
+  <img alt="FileDock workspace preview" src="https://github.com/user-attachments/assets/94c59a9d-6b50-43ba-a366-1aa0c72cf938" width="100%">
 </picture>
 
 </div>
@@ -42,32 +42,14 @@ FileDock is written in strict-typed PHP 7.4–8.x (`declare(strict_types=1);`) u
 
 ## Quick Start
 
-Download `filedock.php` and upload it to your target directory:
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/mahyardyn/file-dock/main/filedock.php
-```
-
-1. Open `https://your-domain.com/path/to/filedock.php` in your browser.
-2. Sign in with the default password `admin` — FileDock will prompt you to set a new password (minimum 8 characters) on first login and store its bcrypt hash in `.filedock-auth.php` (`0600`).
-3. To pre-configure a password hash or adjust defaults before uploading, edit `$CONFIG` at the top of `filedock.php`:
-
-```php
-$CONFIG = [
-    'AUTH_ENABLED'          => true,
-    'DEFAULT_PASSWORD_HASH' => '$2y$10$YxbKyw4gpR38J1jPNLPaLuyGDigce98mpM.QfXyG9V62NwvwCQT2u',
-    'ROOT_DIR'              => __DIR__,
-    'TIMEZONE'              => 'UTC',
-    'WP_CLI_ENABLED'        => true,
-    'WP_CLI_BIN'            => 'wp',
-];
-```
-
-Generate a custom bcrypt hash locally:
-
-```bash
-php -r "echo password_hash('your-strong-password', PASSWORD_BCRYPT) . PHP_EOL;"
-```
+1. **Get `filedock.php`:**
+   - **Shared Hosting / FTP:** Download `filedock.php` from the [Latest Release](https://github.com/mahyardyn/file-dock/releases/latest) and upload it to your web root (e.g., `public_html/`).
+   - **VPS / Terminal:**
+     ```bash
+     curl -fsSLO https://raw.githubusercontent.com/mahyardyn/file-dock/main/filedock.php
+     ```
+2. **Open in Browser:** Visit `https://your-domain.com/filedock.php`.
+3. **Sign In & Set Password:** Log in with the default password `admin`. FileDock will prompt you to set a new password (minimum 8 characters) and store its bcrypt hash in `.filedock-auth.php` (`0600`).
 
 ---
 
