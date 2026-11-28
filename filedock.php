@@ -1510,53 +1510,157 @@ final class FileSystemService
     }
 
     /**
-     * Compress selected files/folders into a .zip archive.
+     * Compress one or more files/directories into a .zip, .tar, .tar.gz, or .tar.bz2 archive.
      *
      * @param array<int, string> $relPaths
      * @param string $destParentRel
      * @param string $archiveName
+     * @param string $format
      * @return array<string, string>
      */
-    public function compressZip(array $relPaths, string $destParentRel, string $archiveName): array
+    public function compressZip(array $relPaths, string $destParentRel, string $archiveName, string $format = 'zip'): array
     {
-        if (!class_exists('ZipArchive')) {
-            throw new \RuntimeException('PHP ZipArchive extension is not available on this server.');
-        }
         if (empty($relPaths)) {
             throw new \InvalidArgumentException('No items selected to compress.');
         }
 
-        $safeName = $this->guard->validateBaseName($archiveName);
-        if (strtolower(substr($safeName, -4)) !== '.zip') {
-            $safeName .= '.zip';
+        $formatMap = [
+            'zip' => '.zip',
+            '.zip' => '.zip',
+            'tar' => '.tar',
+            '.tar' => '.tar',
+            'targz' => '.tar.gz',
+            'tar.gz' => '.tar.gz',
+            '.tar.gz' => '.tar.gz',
+            'tarbz2' => '.tar.bz2',
+            'tar.bz2' => '.tar.bz2',
+            '.tar.bz2' => '.tar.bz2',
+        ];
+        $fmtKey = strtolower(trim($format));
+        if (!isset($formatMap[$fmtKey])) {
+            throw new \InvalidArgumentException('Unsupported archive format.');
+        }
+        $ext = $formatMap[$fmtKey];
+
+        if ($ext === '.zip' && !class_exists('ZipArchive')) {
+            throw new \RuntimeException('PHP ZipArchive extension is not available on this server.');
+        }
+        if ($ext !== '.zip' && !class_exists('PharData')) {
+            throw new \RuntimeException('PHP PharData extension is not available on this server.');
+        }
+        if ($ext === '.tar.gz' && !extension_loaded('zlib')) {
+            throw new \RuntimeException('PHP zlib extension is required for .tar.gz archives.');
+        }
+        if ($ext === '.tar.bz2' && !extension_loaded('bz2')) {
+            throw new \RuntimeException('PHP bz2 extension is required for .tar.bz2 archives.');
         }
 
-        $targetZip = $this->guard->resolveTarget($destParentRel, $safeName);
-        if (file_exists($targetZip)) {
+        $safeName = $this->guard->validateBaseName($archiveName);
+        if (substr(strtolower($safeName), -strlen($ext)) !== $ext) {
+            $safeName .= $ext;
+        }
+
+        $targetArchive = $this->guard->resolveTarget($destParentRel, $safeName);
+        if (file_exists($targetArchive)) {
             throw new \RuntimeException('Archive "' . $safeName . '" already exists.');
         }
 
-        $zip = new \ZipArchive();
-        if ($zip->open($targetZip, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
-            throw new \RuntimeException('Failed to create zip archive.');
+        if ($ext === '.zip') {
+            $zip = new \ZipArchive();
+            if ($zip->open($targetArchive, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+                throw new \RuntimeException('Failed to create zip archive.');
+            }
+            try {
+                foreach ($relPaths as $relPath) {
+                    $abs = $this->guard->resolveExisting((string) $relPath);
+                    $base = PathGuard::baseName($abs);
+                    if (is_dir($abs)) {
+                        $this->addDirToZip($zip, $abs, $base);
+                    } else {
+                        $zip->addFile($abs, $base);
+                    }
+                }
+            } finally {
+                $zip->close();
+            }
+            return ['path' => $this->guard->toRelative($targetArchive), 'name' => $safeName];
         }
 
+        $destDir = dirname($targetArchive);
+        $tarPath = ($ext === '.tar')
+            ? $targetArchive
+            : $destDir . DIRECTORY_SEPARATOR . '.fd_tmp_' . bin2hex(random_bytes(6)) . '.tar';
+        $compressedTmp = null;
+
         try {
+            $phar = new \PharData($tarPath);
             foreach ($relPaths as $relPath) {
                 $abs = $this->guard->resolveExisting((string) $relPath);
                 $base = PathGuard::baseName($abs);
-
                 if (is_dir($abs)) {
-                    $this->addDirToZip($zip, $abs, $base);
+                    $this->addDirToPhar($phar, $abs, $base);
                 } else {
-                    $zip->addFile($abs, $base);
+                    $phar->addFile($abs, $base);
                 }
             }
+
+            if ($ext === '.tar.gz') {
+                $phar->compress(\Phar::GZ);
+                $compressedTmp = $tarPath . '.gz';
+            } elseif ($ext === '.tar.bz2') {
+                $phar->compress(\Phar::BZ2);
+                $compressedTmp = $tarPath . '.bz2';
+            }
+
+            unset($phar);
+
+            if ($compressedTmp !== null) {
+                if (!is_file($compressedTmp) || !@rename($compressedTmp, $targetArchive)) {
+                    throw new \RuntimeException('Failed to finalize compressed archive.');
+                }
+                $compressedTmp = null;
+            }
         } finally {
-            $zip->close();
+            if ($ext !== '.tar' && is_file($tarPath)) {
+                @unlink($tarPath);
+            }
+            if ($compressedTmp !== null && is_file($compressedTmp)) {
+                @unlink($compressedTmp);
+            }
         }
 
-        return ['path' => $this->guard->toRelative($targetZip), 'name' => $safeName];
+        return ['path' => $this->guard->toRelative($targetArchive), 'name' => $safeName];
+    }
+
+    /**
+     * Recursively add a directory tree to a PharData archive.
+     *
+     * @param \PharData $phar
+     * @param string $dirAbs
+     * @param string $prefix
+     * @return void
+     */
+    private function addDirToPhar(\PharData $phar, string $dirAbs, string $prefix): void
+    {
+        $phar->addEmptyDir($prefix);
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dirAbs, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+        $baseLen = strlen($dirAbs) + 1;
+        foreach ($it as $item) {
+            /** @var \SplFileInfo $item */
+            if ($item->isLink()) {
+                continue;
+            }
+            $subPath = str_replace('\\', '/', substr($item->getPathname(), $baseLen));
+            $localName = $prefix . '/' . $subPath;
+            if ($item->isDir()) {
+                $phar->addEmptyDir($localName);
+            } else {
+                $phar->addFile($item->getPathname(), $localName);
+            }
+        }
     }
 
     /**
@@ -3987,7 +4091,8 @@ final class FileManagerController
                     $paths = isset($payload['paths']) && is_array($payload['paths']) ? $payload['paths'] : [];
                     $dest = isset($payload['destination']) ? (string) $payload['destination'] : '';
                     $name = isset($payload['name']) ? (string) $payload['name'] : '';
-                    $this->jsonSuccess($this->fs->compressZip($paths, $dest, $name));
+                    $format = isset($payload['format']) ? (string) $payload['format'] : 'zip';
+                    $this->jsonSuccess($this->fs->compressZip($paths, $dest, $name, $format));
                     break;
 
                 case 'unzip':
@@ -4463,6 +4568,12 @@ HTML;
             'authEnabled' => $authEnabled,
             'mustChangePassword' => $mustChangePassword,
             'zipSupported' => $zipSupported,
+            'archiveSupport' => [
+                'zip' => $zipSupported,
+                'phar' => class_exists('PharData'),
+                'zlib' => extension_loaded('zlib'),
+                'bz2' => extension_loaded('bz2'),
+            ],
             'extractCapabilities' => FileSystemService::getExtractCapabilities(),
             'selfUrl' => $this->getSelfUrl(),
             'initialListing' => $initialListing,
@@ -5405,6 +5516,10 @@ dialog {
                 <label id="prompt-label" for="prompt-input">Name</label>
                 <input type="text" id="prompt-input" class="input" required>
             </div>
+            <div class="field" id="prompt-format-field" hidden>
+                <label for="prompt-format">Format</label>
+                <select id="prompt-format" class="input"></select>
+            </div>
             <p id="prompt-hint" class="hint-text"></p>
         </div>
         <div class="modal-footer">
@@ -5612,7 +5727,28 @@ dialog {
         sortDir: 'asc',
         searchQuery: '',
         selected: new Set(),
-        zipSupported: Boolean(BOOTSTRAP.zipSupported),
+    const ARCHIVE_SUPPORT = BOOTSTRAP.archiveSupport || {
+        zip: Boolean(BOOTSTRAP.zipSupported),
+        phar: false,
+        zlib: false,
+        bz2: false,
+    };
+    const COMPRESS_FORMATS = [
+        ARCHIVE_SUPPORT.zip ? { value: 'zip', ext: '.zip', label: '.zip (Zip)' } : null,
+        ARCHIVE_SUPPORT.phar ? { value: 'tar', ext: '.tar', label: '.tar (Tar)' } : null,
+        (ARCHIVE_SUPPORT.phar && ARCHIVE_SUPPORT.zlib) ? { value: 'tar.gz', ext: '.tar.gz', label: '.tar.gz (Gzip)' } : null,
+        (ARCHIVE_SUPPORT.phar && ARCHIVE_SUPPORT.bz2) ? { value: 'tar.bz2', ext: '.tar.bz2', label: '.tar.bz2 (Bzip2)' } : null,
+    ].filter(Boolean);
+
+    const state = {
+        currentPath: '',
+        items: [],
+        selected: new Set(),
+        sortKey: 'name',
+        sortDir: 'asc',
+        search: '',
+        showHidden: false,
+        zipSupported: COMPRESS_FORMATS.length > 0,
         extractCapabilities: BOOTSTRAP.extractCapabilities || { zip: Boolean(BOOTSTRAP.zipSupported), tar: false, tarGz: false, tarBz2: false },
         pendingUploadFiles: [],
         editorPath: '',
@@ -5918,13 +6054,44 @@ dialog {
     }
 
     // Prompts, Delete, Chmod, Password
-    function showPrompt({ title, label, value = '', hint = '', submitText = 'Confirm', required = true, onConfirm }) {
+    function showPrompt({ title, label, value = '', hint = '', submitText = 'Confirm', required = true, formats = null, onConfirm }) {
         el('prompt-title').textContent = title;
         el('prompt-label').textContent = label;
         el('prompt-input').value = value;
         el('prompt-input').required = required;
         el('prompt-hint').textContent = hint;
         el('prompt-submit').textContent = submitText;
+
+        const fmtField = el('prompt-format-field');
+        const fmtSelect = el('prompt-format');
+        fmtSelect.innerHTML = '';
+        if (Array.isArray(formats) && formats.length > 0) {
+            formats.forEach((f) => {
+                const opt = document.createElement('option');
+                opt.value = f.value;
+                opt.textContent = f.label;
+                fmtSelect.appendChild(opt);
+            });
+            fmtField.hidden = false;
+            fmtSelect.onchange = () => {
+                const chosen = formats.find((f) => f.value === fmtSelect.value);
+                if (!chosen) return;
+                const inp = el('prompt-input');
+                let cur = inp.value.trim();
+                const exts = ['.tar.gz', '.tar.bz2', '.zip', '.tar'];
+                for (const ext of exts) {
+                    if (cur.toLowerCase().endsWith(ext)) {
+                        cur = cur.slice(0, -ext.length);
+                        break;
+                    }
+                }
+                inp.value = (cur || 'archive') + chosen.ext;
+            };
+        } else {
+            fmtField.hidden = true;
+            fmtSelect.onchange = null;
+        }
+
         state.promptCallback = onConfirm;
         openDialog('modal-prompt', el('prompt-input'), () => el('prompt-input').select());
     }
@@ -5947,13 +6114,20 @@ dialog {
     }
 
     function promptZip(paths) {
+        if (COMPRESS_FORMATS.length === 0) {
+            toast('No archive compression extensions are available on this server.', 'error');
+            return;
+        }
+        const defaultFmt = COMPRESS_FORMATS[0];
+        const baseName = paths.length === 1 ? paths[0].split('/').pop() : 'archive';
         showPrompt({
-            title: 'Create Zip Archive',
+            title: 'Create Archive',
             label: 'Archive filename',
-            value: paths.length === 1 ? paths[0].split('/').pop() + '.zip' : 'archive.zip',
-            submitText: 'Create Zip',
-            onConfirm: async (name) => {
-                const res = await api('zip', { paths, destination: state.currentPath, name });
+            value: baseName + defaultFmt.ext,
+            submitText: 'Compress',
+            formats: COMPRESS_FORMATS,
+            onConfirm: async (name, format) => {
+                const res = await api('zip', { paths, destination: state.currentPath, name, format: format || defaultFmt.value });
                 toast(`Created ${res.name}`);
                 loadDirectory(state.currentPath);
             },
@@ -6378,7 +6552,9 @@ dialog {
             const val = inp.value.trim();
             if ((inp.required && !val) || !state.promptCallback) return;
             await withLoadingBtn(el('prompt-submit'), 'Working...', async () => {
-                await state.promptCallback(val);
+                const fmtField = el('prompt-format-field');
+                const fmt = fmtField && !fmtField.hidden ? el('prompt-format').value : undefined;
+                await state.promptCallback(val, fmt);
                 closeDialog('modal-prompt');
             });
         });
