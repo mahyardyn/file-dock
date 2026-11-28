@@ -5733,15 +5733,6 @@ dialog {
         }
     }
 
-    const state = {
-        currentPath: '',
-        items: [],
-        breadcrumbs: [],
-        showHidden: false,
-        sortKey: 'name',
-        sortDir: 'asc',
-        searchQuery: '',
-        selected: new Set(),
     const ARCHIVE_SUPPORT = BOOTSTRAP.archiveSupport || {
         zip: Boolean(BOOTSTRAP.zipSupported),
         phar: false,
@@ -5761,7 +5752,7 @@ dialog {
         selected: new Set(),
         sortKey: 'name',
         sortDir: 'asc',
-        search: '',
+        searchQuery: '',
         showHidden: false,
         zipSupported: COMPRESS_FORMATS.length > 0,
         extractCapabilities: BOOTSTRAP.extractCapabilities || { zip: Boolean(BOOTSTRAP.zipSupported), tar: false, tarGz: false, tarBz2: false },
@@ -5927,7 +5918,7 @@ dialog {
     }
 
     function getFilteredSortedItems() {
-        const q = state.searchQuery.trim().toLowerCase();
+        const q = (state.searchQuery || '').trim().toLowerCase();
         const list = state.items.filter((i) => !q || i.name.toLowerCase().includes(q));
         list.sort((a, b) => {
             if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
@@ -6597,7 +6588,7 @@ dialog {
                 if (res && res.csrfToken) BOOTSTRAP.csrfToken = res.csrfToken;
                 closeDialog('modal-password');
                 toast('Password updated');
-                if (wasForced) loadDirectory(window.location.hash ? decodeURIComponent(window.location.hash.slice(1)) : '');
+                if (wasForced) loadDirectory(window.location.hash && window.location.hash !== '#main-content' ? decodeURIComponent(window.location.hash.slice(1)) : '');
             }, (err) => setPasswordError(err.message));
         });
 
@@ -6720,7 +6711,7 @@ dialog {
     }
 
     initEvents();
-    const initialPath = window.location.hash ? decodeURIComponent(window.location.hash.slice(1)) : '';
+    const initialPath = window.location.hash && window.location.hash !== '#main-content' ? decodeURIComponent(window.location.hash.slice(1)) : '';
     if (BOOTSTRAP.mustChangePassword) openPasswordModal(true);
     else if (!initialPath && BOOTSTRAP.initialListing) applyListingData(BOOTSTRAP.initialListing);
     else loadDirectory(initialPath);
