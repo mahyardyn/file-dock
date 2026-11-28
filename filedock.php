@@ -4422,7 +4422,7 @@ CSS;
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="robots" content="noindex, nofollow, noarchive">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
@@ -4477,7 +4477,7 @@ __HEAD_PREFIX__
 <style>
 __BASE_CSS__
 body {
-    min-height: 100dvh;
+    min-height: var(--vvh, 100dvh);
     display: grid;
     place-items: center;
     padding-block: clamp(12px, 4vw, 24px);
@@ -4529,6 +4529,7 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.015em; }
     __GITHUB_LINK__
 </footer>
 </div>
+<script>(function(){var vv=window.visualViewport;if(!vv)return;function sync(){document.documentElement.style.setProperty('--vvh',Math.round(vv.height)+'px');}sync();vv.addEventListener('resize',sync);vv.addEventListener('scroll',sync);window.addEventListener('resize',sync);})();</script>
 </body>
 </html>
 HTML;
@@ -4942,18 +4943,18 @@ dialog {
     color: var(--text);
     box-shadow: var(--shadow-lg);
     width: min(460px, calc(100vw - 24px));
-    max-height: min(90dvh, 860px);
+    max-height: min(90dvh, calc(var(--vvh, 100dvh) - 24px), 860px);
     overflow: hidden;
     overscroll-behavior: contain;
     &::backdrop { background: rgba(9, 11, 15, 0.62); }
     &[open] { display: flex; flex-direction: column; }
     &.dialog-lg { width: min(760px, calc(100vw - 24px)); }
-    &.dialog-xl { width: min(1040px, calc(100vw - 24px)); height: min(86dvh, 780px); }
+    &.dialog-xl { width: min(1040px, calc(100vw - 24px)); height: min(86dvh, calc(var(--vvh, 100dvh) - 24px), 780px); }
     &.dialog-drawer {
         margin: 0 0 0 auto;
         width: min(440px, 100vw);
-        height: 100dvh;
-        max-height: 100dvh;
+        height: var(--vvh, 100dvh);
+        max-height: var(--vvh, 100dvh);
         border-radius: 0;
         border-inline-start: 1px solid var(--border);
     }
@@ -4962,20 +4963,33 @@ dialog {
     dialog {
         opacity: 0;
         transform: scale(0.97);
-        transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+        transition:
+            opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+            transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+            display 0.18s allow-discrete,
+            overlay 0.18s allow-discrete;
+        &::backdrop {
+            background: rgba(9, 11, 15, 0);
+            transition:
+                background-color 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+                display 0.18s allow-discrete,
+                overlay 0.18s allow-discrete;
+        }
         &[open] {
             opacity: 1;
             transform: scale(1);
             @starting-style { opacity: 0; transform: scale(0.97); }
+            &::backdrop {
+                background: rgba(9, 11, 15, 0.62);
+                @starting-style { background: rgba(9, 11, 15, 0); }
+            }
         }
-        &.closing { opacity: 0; transform: scale(0.97); }
         &.dialog-drawer {
             transform: translateX(24px);
             &[open] {
                 transform: translateX(0);
                 @starting-style { opacity: 0; transform: translateX(24px); }
             }
-            &.closing { opacity: 0; transform: translateX(24px); }
         }
     }
     @media (max-width: 47.99rem) {
@@ -4985,7 +4999,6 @@ dialog {
                 transform: translateY(0);
                 @starting-style { opacity: 0; transform: translateY(20px); }
             }
-            &.closing { opacity: 0; transform: translateY(20px); }
         }
     }
 }
@@ -5844,10 +5857,9 @@ dialog {
         return json.data;
     }
 
-    // Native <dialog> helpers with smooth close transition
+    // Native <dialog> helpers with discrete top-layer close transition
     function openDialog(id, focusEl = null, onFocus = null) {
         const dlg = el(id);
-        dlg.classList.remove('closing');
         if (!dlg.open) dlg.showModal();
         requestAnimationFrame(() => {
             if (focusEl) focusEl.focus();
@@ -5862,20 +5874,22 @@ dialog {
             state.editorDirty = false;
         }
         const dlg = el(id);
-        if (!dlg || !dlg.open) return true;
-        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-            dlg.close();
-            return true;
-        }
-        dlg.classList.add('closing');
-        const finish = () => {
-            dlg.classList.remove('closing');
-            if (dlg.open) dlg.close();
-        };
-        dlg.addEventListener('transitionend', finish, { once: true });
-        setTimeout(finish, 200);
+        if (dlg && dlg.open) dlg.close();
         return true;
     }
+
+    // Track visualViewport height for virtual keyboard positioning
+    (function initVisualViewport() {
+        const vv = window.visualViewport;
+        if (!vv) return;
+        const sync = () => {
+            document.documentElement.style.setProperty('--vvh', `${Math.round(vv.height)}px`);
+        };
+        sync();
+        vv.addEventListener('resize', sync);
+        vv.addEventListener('scroll', sync);
+        window.addEventListener('resize', sync);
+    })();
 
     function applyListingData(data) {
         state.currentPath = data.currentPath;
