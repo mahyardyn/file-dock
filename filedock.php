@@ -336,6 +336,12 @@ final class AuthManager
     /** @var int */
     private const MIN_PASSWORD_LENGTH = 8;
 
+    /** @var int */
+    private const REMEMBER_LIFETIME_SECONDS = 604800; // 7 days
+
+    /** @var int */
+    private const SESSION_ROTATE_INTERVAL_SECONDS = 1800; // 30 minutes
+
     /** @var bool */
     private bool $authEnabled;
 
@@ -419,7 +425,7 @@ final class AuthManager
      * @param string $password
      * @return bool
      */
-    public function login(string $password): bool
+    public function login(string $password, bool $rememberMe = false): bool
     {
         $this->lastError = '';
         if (!$this->authEnabled) {
@@ -467,6 +473,16 @@ final class AuthManager
         $_SESSION['fm_authenticated'] = true;
         $_SESSION['fm_must_change_password'] = !$this->hasCustomPassword($data);
         $_SESSION['fm_csrf_token'] = bin2hex(random_bytes(32));
+        $_SESSION['fm_last_rotated_at'] = time();
+
+        if ($rememberMe) {
+            $_SESSION['fm_remember'] = true;
+            $_SESSION['fm_expires_at'] = time() + self::REMEMBER_LIFETIME_SECONDS;
+            $this->issueSessionCookie(self::REMEMBER_LIFETIME_SECONDS);
+        } else {
+            unset($_SESSION['fm_remember'], $_SESSION['fm_expires_at']);
+            $this->issueSessionCookie(0);
+        }
 
         return true;
     }
@@ -694,9 +710,11 @@ final class AuthManager
             return;
         }
 
-        $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-            || (isset($_SERVER['SERVER_PORT']) && (int) $_SERVER['SERVER_PORT'] === 443)
-            || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+        $isHttps = $this->isHttpsRequest();
+        $currentGcMax = (int) ini_get('session.gc_maxlifetime');
+        if ($currentGcMax < self::REMEMBER_LIFETIME_SECONDS) {
+            ini_set('session.gc_maxlifetime', (string) self::REMEMBER_LIFETIME_SECONDS);
+        }
 
         ini_set('session.use_strict_mode', '1');
         session_set_cookie_params([
@@ -709,6 +727,81 @@ final class AuthManager
         ]);
         session_name('FM_SESSID');
         session_start();
+
+        $this->maintainAuthenticatedSession();
+    }
+
+    /**
+     * Enforce sliding expiration for remembered sessions and periodic session ID rotation.
+     *
+     * @return void
+     */
+    private function maintainAuthenticatedSession(): void
+    {
+        if (!$this->authEnabled || !$this->isAuthenticated()) {
+            return;
+        }
+
+        $now = time();
+        $isRemembered = !empty($_SESSION['fm_remember']);
+
+        if ($isRemembered) {
+            if (isset($_SESSION['fm_expires_at']) && $now > (int) $_SESSION['fm_expires_at']) {
+                $this->logout();
+                return;
+            }
+            $_SESSION['fm_expires_at'] = $now + self::REMEMBER_LIFETIME_SECONDS;
+            $this->issueSessionCookie(self::REMEMBER_LIFETIME_SECONDS);
+        }
+
+        $lastRotatedAt = isset($_SESSION['fm_last_rotated_at']) ? (int) $_SESSION['fm_last_rotated_at'] : 0;
+        if ($lastRotatedAt === 0 || ($now - $lastRotatedAt) >= self::SESSION_ROTATE_INTERVAL_SECONDS) {
+            session_regenerate_id(true);
+            $_SESSION['fm_last_rotated_at'] = $now;
+            if ($isRemembered) {
+                $this->issueSessionCookie(self::REMEMBER_LIFETIME_SECONDS);
+            }
+        }
+    }
+
+    /**
+     * Issue or refresh the session cookie with hardened security flags.
+     *
+     * @param int $lifetime
+     * @return void
+     */
+    private function issueSessionCookie(int $lifetime): void
+    {
+        if (headers_sent() || !ini_get('session.use_cookies')) {
+            return;
+        }
+
+        $sessionName = session_name();
+        $sessionId = session_id();
+        if ($sessionName === false || $sessionId === false || $sessionId === '') {
+            return;
+        }
+
+        setcookie($sessionName, $sessionId, [
+            'expires' => $lifetime > 0 ? time() + $lifetime : 0,
+            'path' => '/',
+            'domain' => '',
+            'secure' => $this->isHttpsRequest(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+    }
+
+    /**
+     * Determine whether the current request arrived over HTTPS.
+     *
+     * @return bool
+     */
+    private function isHttpsRequest(): bool
+    {
+        return (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+            || (isset($_SERVER['SERVER_PORT']) && (int) $_SERVER['SERVER_PORT'] === 443)
+            || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
     }
 }
 
@@ -3756,7 +3849,8 @@ final class FileManagerController
         }
 
         $pass = isset($_POST['password']) ? (string) $_POST['password'] : '';
-        if ($this->auth->login($pass)) {
+        $rememberMe = !empty($_POST['remember_me']) && (string) $_POST['remember_me'] === '1';
+        if ($this->auth->login($pass, $rememberMe)) {
             header('Location: ' . $this->getSelfUrl());
             exit;
         }
@@ -4111,6 +4205,9 @@ body {
 .brand { margin-block-end: 6px; }
 h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.015em; }
 .subtitle { margin: 0 0 20px; font-size: 13px; color: var(--muted); }
+.field-check { margin-block: 10px 14px; }
+.check-label { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+.check-label input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .login-btn { width: 100%; min-height: 42px; margin-block-start: 4px; font-size: 14px; font-weight: 600; }
 </style>
 </head>
@@ -4129,6 +4226,12 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.015em; }
         <div class="field">
             <label for="password">Password</label>
             <input type="password" id="password" name="password" class="input" autocomplete="current-password" required autofocus>
+        </div>
+        <div class="field-check">
+            <label class="check-label" for="remember_me">
+                <input type="checkbox" id="remember_me" name="remember_me" value="1">
+                <span>Keep me signed in for 7 days</span>
+            </label>
         </div>
         <button type="submit" class="btn btn-primary login-btn">Sign In</button>
     </form>
