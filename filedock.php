@@ -956,9 +956,10 @@ final class FileSystemService
 
             $category = $this->categorizeItem($isDir, $ext);
             $isImage = !$isDir && in_array($ext, self::IMAGE_EXTENSIONS, true);
-            $isZip = !$isDir && $ext === 'zip';
+            $archiveFormat = !$isDir ? $this->detectArchiveFormat($name) : null;
+            $isZip = $archiveFormat === 'zip';
             $isEditable = !$isDir && $this->isEditableFile($name, $ext, $size);
-            $isViewable = !$isDir && !$isEditable && !$isImage && !$isZip && $this->isTextFile($itemAbs);
+            $isViewable = !$isDir && !$isEditable && !$isImage && $archiveFormat === null && $this->isTextFile($itemAbs);
 
             $items[] = [
                 'name' => $name,
@@ -976,6 +977,7 @@ final class FileSystemService
                 'category' => $category,
                 'isImage' => $isImage,
                 'isZip' => $isZip,
+                'archiveFormat' => $archiveFormat,
                 'isEditable' => $isEditable,
                 'isViewable' => $isViewable,
             ];
@@ -993,6 +995,7 @@ final class FileSystemService
             'breadcrumbs' => $this->buildBreadcrumbs($normalizedRel),
             'items' => $items,
             'zipSupported' => class_exists('ZipArchive'),
+            'extractCapabilities' => self::getExtractCapabilities(),
         ];
     }
 
@@ -1557,7 +1560,47 @@ final class FileSystemService
     }
 
     /**
-     * Extract a .zip archive safely with Zip Slip validation.
+     * Detect supported archive format from filename.
+     *
+     * @param string $filename
+     * @return string|null One of 'zip', 'tar', 'tarGz', 'tarBz2', or null
+     */
+    private function detectArchiveFormat(string $filename): ?string
+    {
+        $lower = strtolower($filename);
+        if (substr($lower, -4) === '.zip') {
+            return 'zip';
+        }
+        if (substr($lower, -7) === '.tar.gz' || substr($lower, -4) === '.tgz') {
+            return 'tarGz';
+        }
+        if (substr($lower, -8) === '.tar.bz2') {
+            return 'tarBz2';
+        }
+        if (substr($lower, -4) === '.tar') {
+            return 'tar';
+        }
+        return null;
+    }
+
+    /**
+     * Return server archive extraction capabilities.
+     *
+     * @return array<string, bool>
+     */
+    public static function getExtractCapabilities(): array
+    {
+        $hasPhar = class_exists('PharData');
+        return [
+            'zip' => class_exists('ZipArchive'),
+            'tar' => $hasPhar,
+            'tarGz' => $hasPhar && extension_loaded('zlib'),
+            'tarBz2' => $hasPhar && extension_loaded('bz2'),
+        ];
+    }
+
+    /**
+     * Extract a .zip, .tar, .tar.gz (.tgz), or .tar.bz2 archive safely with Zip Slip validation.
      *
      * @param string $relPath
      * @param string $destParentRel
@@ -1565,18 +1608,39 @@ final class FileSystemService
      */
     public function extractZip(string $relPath, string $destParentRel): array
     {
-        if (!class_exists('ZipArchive')) {
-            throw new \RuntimeException('PHP ZipArchive extension is not available on this server.');
-        }
-
-        $zipAbs = $this->guard->resolveExisting($relPath);
-        if (!is_file($zipAbs)) {
+        $archiveAbs = $this->guard->resolveExisting($relPath);
+        if (!is_file($archiveAbs)) {
             throw new \InvalidArgumentException('Archive file does not exist.');
         }
 
         $destAbs = $this->guard->resolveExisting($destParentRel);
         if (!is_dir($destAbs) || !is_writable($destAbs)) {
             throw new \RuntimeException('Extraction destination is not writable.');
+        }
+
+        $format = $this->detectArchiveFormat(PathGuard::baseName($archiveAbs));
+        if ($format === null) {
+            throw new \InvalidArgumentException('Unsupported archive format.');
+        }
+
+        if ($format === 'zip') {
+            return $this->extractZipArchive($archiveAbs, $destAbs);
+        }
+
+        return $this->extractPharArchive($archiveAbs, $destAbs, $format);
+    }
+
+    /**
+     * Extract a .zip archive using ZipArchive after validating all entries.
+     *
+     * @param string $zipAbs
+     * @param string $destAbs
+     * @return array<string, int>
+     */
+    private function extractZipArchive(string $zipAbs, string $destAbs): array
+    {
+        if (!class_exists('ZipArchive')) {
+            throw new \RuntimeException('PHP ZipArchive extension is not available on this server.');
         }
 
         $zip = new \ZipArchive();
@@ -1587,14 +1651,15 @@ final class FileSystemService
         $count = $zip->numFiles;
         for ($i = 0; $i < $count; $i++) {
             $entryName = $zip->getNameIndex($i);
-            if ($entryName === false || !$this->isSafeZipEntry($entryName) || $this->zipEntryHitsSymlink($destAbs, $entryName)) {
+            if ($entryName === false) {
                 $zip->close();
-                throw new \RuntimeException('Archive contains unsafe path traversal entries.');
+                throw new \RuntimeException('Archive contains unreadable entry.');
             }
-            $destEntry = $destAbs . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, ltrim($entryName, '/'));
-            if ($this->guard->isSelfOrContainsSelf($destEntry)) {
+            try {
+                $this->validateArchiveEntry($destAbs, $entryName);
+            } catch (\Throwable $e) {
                 $zip->close();
-                throw new \InvalidArgumentException('Access denied: archive cannot overwrite FileDock script.');
+                throw $e;
             }
         }
 
@@ -1606,6 +1671,65 @@ final class FileSystemService
         }
 
         return ['extracted' => $count];
+    }
+
+    /**
+     * Extract a .tar, .tar.gz (.tgz), or .tar.bz2 archive using PharData after validating all entries.
+     *
+     * @param string $archiveAbs
+     * @param string $destAbs
+     * @param string $format
+     * @return array<string, int>
+     */
+    private function extractPharArchive(string $archiveAbs, string $destAbs, string $format): array
+    {
+        $caps = self::getExtractCapabilities();
+        if (empty($caps[$format])) {
+            throw new \RuntimeException('Required PHP PharData/compression extension is not available on this server.');
+        }
+
+        try {
+            $phar = new \PharData($archiveAbs);
+            $iterator = new \RecursiveIteratorIterator($phar, \RecursiveIteratorIterator::SELF_FIRST);
+            $count = 0;
+
+            foreach ($iterator as $fileInfo) {
+                /** @var \PharFileInfo $fileInfo */
+                if ($fileInfo->isLink()) {
+                    throw new \RuntimeException('Archive contains unsafe symlink entries.');
+                }
+                $entryName = str_replace('\\', '/', $iterator->getSubPathName());
+                $this->validateArchiveEntry($destAbs, $entryName);
+                $count++;
+            }
+
+            $phar->extractTo($destAbs, null, true);
+            return ['extracted' => $count];
+        } catch (\RuntimeException $e) {
+            throw $e;
+        } catch (\InvalidArgumentException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new \RuntimeException('Failed to extract archive: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Validate a single archive entry against Zip-Slip, symlinks, and FileDock self-overwrite.
+     *
+     * @param string $destAbs
+     * @param string $entryName
+     * @return void
+     */
+    private function validateArchiveEntry(string $destAbs, string $entryName): void
+    {
+        if (!$this->isSafeZipEntry($entryName) || $this->zipEntryHitsSymlink($destAbs, $entryName)) {
+            throw new \RuntimeException('Archive contains unsafe path traversal entries.');
+        }
+        $destEntry = $destAbs . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, ltrim($entryName, '/'));
+        if ($this->guard->isSelfOrContainsSelf($destEntry)) {
+            throw new \InvalidArgumentException('Access denied: archive cannot overwrite FileDock script.');
+        }
     }
 
     /**
@@ -4339,6 +4463,7 @@ HTML;
             'authEnabled' => $authEnabled,
             'mustChangePassword' => $mustChangePassword,
             'zipSupported' => $zipSupported,
+            'extractCapabilities' => FileSystemService::getExtractCapabilities(),
             'selfUrl' => $this->getSelfUrl(),
             'initialListing' => $initialListing,
         ];
@@ -5488,6 +5613,7 @@ dialog {
         searchQuery: '',
         selected: new Set(),
         zipSupported: Boolean(BOOTSTRAP.zipSupported),
+        extractCapabilities: BOOTSTRAP.extractCapabilities || { zip: Boolean(BOOTSTRAP.zipSupported), tar: false, tarGz: false, tarBz2: false },
         pendingUploadFiles: [],
         editorPath: '',
         editorDirty: false,
@@ -5618,6 +5744,7 @@ dialog {
         state.breadcrumbs = data.breadcrumbs;
         state.items = data.items;
         state.zipSupported = Boolean(data.zipSupported);
+        if (data.extractCapabilities) state.extractCapabilities = data.extractCapabilities;
         state.selected.clear();
         const targetHash = state.currentPath ? '#' + encodeURIComponent(state.currentPath) : '';
         if (window.location.hash !== targetHash) {
@@ -5751,7 +5878,7 @@ dialog {
         rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="copy">${icon('copy')} Copy</button>`);
         rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="move">${icon('move')} Move</button>`);
         if (state.zipSupported) rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="compress">${icon('archive')} Compress</button>`);
-        if (item.isZip && state.zipSupported) rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="unzip">${icon('unzip')} Extract</button>`);
+        if (item.archiveFormat && state.extractCapabilities && state.extractCapabilities[item.archiveFormat]) rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="unzip">${icon('unzip')} Extract</button>`);
         if (item.type === 'file') rows.push(`<a class="menu-item" role="menuitem" href="${escapeHtml(BOOTSTRAP.selfUrl)}?action=download&amp;path=${encodeURIComponent(item.path)}" data-ctx="download">${icon('download')} Download</a>`);
         rows.push('<hr class="menu-sep">');
         rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="chmod">${icon('chmod')} Permissions</button>`);
