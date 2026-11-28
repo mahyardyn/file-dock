@@ -4391,7 +4391,7 @@ input[type="checkbox"] {
     .btn-soft-danger:hover:not(:disabled) { background: var(--danger-soft-hover); border-color: var(--danger); }
     .gh-link:hover { color: var(--text); background: var(--surface-2); }
 }
-@media (max-width: 47.99rem) {
+@media (max-width: 47.99rem), (pointer: coarse) {
     .input { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -5233,9 +5233,11 @@ dialog {
 @keyframes toastIn { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes toastOut { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(6px) scale(0.97); } }
 
+@media (max-width: 47.99rem), (pointer: coarse) {
+    .search-input, .terminal-input, .editor-textarea, .editor-gutter { font-size: 16px; }
+}
 @media (max-width: 47.99rem) {
     .kbd-hint { display: none; }
-    .search-input, .terminal-input { font-size: 16px; }
     .account-wrap, .account-menu { display: contents; }
     #btn-account { display: none; }
     dialog.sheet-mobile {
