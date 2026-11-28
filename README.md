@@ -6,17 +6,14 @@
 
 [![PHP 7.4–8.x](https://badgen.net/badge/PHP/7.4-8.x/4F5B93)](https://www.php.net/)
 [![Zero Dependencies](https://badgen.net/badge/Dependencies/Zero/0F766E)](#why-filedock)
-[![Single File](https://badgen.net/badge/Single-File/~246%20KB/111317)](#quick-start)
+[![Single File](https://badgen.net/badge/Single-File/~265%20KB/111317)](#quick-start)
 [![MIT License](https://badgen.net/badge/License/MIT/646B78)](LICENSE)
-
-<br>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/36ac7656-4052-4a0a-b94e-fae917b287d8">
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/user-attachments/assets/94c59a9d-6b50-43ba-a366-1aa0c72cf938">
   <img alt="FileDock workspace preview" src="https://github.com/user-attachments/assets/94c59a9d-6b50-43ba-a366-1aa0c72cf938" width="100%">
 </picture>
-
 </div>
 
 ---
@@ -42,13 +39,14 @@ FileDock is written in strict-typed PHP 7.4–8.x (`declare(strict_types=1);`) u
 
 ## Quick Start
 
-1. **Get `filedock.php`:**
-   - **Shared Hosting / FTP:** Download `filedock.php` from the [Latest Release](https://github.com/mahyardyn/file-dock/releases/latest) and upload it to your web root (e.g., `public_html/`).
-   - **VPS / Terminal:**
-     ```bash
-     curl -fsSLO https://raw.githubusercontent.com/mahyardyn/file-dock/main/filedock.php
-     ```
+1. **Get `filedock.php`:** Download it from the [Latest Release](https://github.com/mahyardyn/file-dock/releases/latest) and upload it to your web root (e.g., `public_html/`), or fetch it directly via terminal:
+
+   ```bash
+   curl -fsSLO https://raw.githubusercontent.com/mahyardyn/file-dock/main/filedock.php
+   ```
+
 2. **Open in Browser:** Visit `https://your-domain.com/filedock.php`.
+
 3. **Sign In & Set Password:** Log in with the default password `admin`. FileDock will prompt you to set a new password (minimum 8 characters) and store its bcrypt hash in `.filedock-auth.php` (`0600`).
 
 ---
@@ -76,16 +74,30 @@ You can rename `filedock.php` to any filename (such as `ops-panel.php` or `files
 
 | Shortcut | Context | Action |
 | :--- | :--- | :--- |
-| `/` | File Browser | Focus filter input |
-| `Right-Click` / `⋮` | File Browser | Open context menu (Bottom Sheet on mobile) |
+| <kbd>/</kbd> | File Browser | Focus filter input |
+| <kbd>Right-Click</kbd> / <kbd>⋮</kbd> | File Browser | Open context menu (Bottom Sheet on mobile) |
 | <kbd>Ctrl</kbd> + <kbd>&#96;</kbd> / <kbd>Cmd</kbd> + <kbd>&#96;</kbd> / <kbd>Alt</kbd> + <kbd>T</kbd> | Global | Toggle Virtual Console |
-| `Ctrl + S` / `Cmd + S` | Code Editor | Save active file |
-| `Tab` | Editor / Console | Insert 4 spaces / Autocomplete |
-| `ArrowUp` / `ArrowDown` | Virtual Console | Navigate command history |
-| `Esc` | Global | Close active modal, drawer, or menu |
+| <kbd>Ctrl</kbd> + <kbd>S</kbd> / <kbd>Cmd</kbd> + <kbd>S</kbd> | Code Editor | Save active file |
+| <kbd>Tab</kbd> | Editor / Console | Insert 4 spaces / Autocomplete |
+| <kbd>ArrowUp</kbd> / <kbd>ArrowDown</kbd> | Virtual Console | Navigate command history |
+| <kbd>Esc</kbd> | Global | Close active modal, drawer, or menu |
 
 ---
 
 ## License
 
 [MIT](LICENSE) © 2026 Mahyar Dayani
+
+---
+
+## Changelog
+
+### v1.1.0
+
+- **Archives:** Add extraction and compression for `.tar`, `.tar.gz`, `.tgz`, and `.tar.bz2`.
+- **Editor:** Add read-only viewer mode for non-editable and large text files.
+- **UX & Auth:** Improve dialog transitions and mobile keyboard handling, fix iOS Safari focus auto-zoom, and fix 7-day sliding-expiration sessions.
+
+### v1.0.0
+
+- Initial release of FileDock (`filedock.php`) with `PathGuard`, `AuthManager`, `FileSystemService`, `ServerInfoService`, `VirtualConsoleService`, and responsive Auto/Light/Dark UI.
