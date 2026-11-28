@@ -812,6 +812,7 @@ final class FileSystemService
 {
     /** @var int */
     private const MAX_EDIT_BYTES = 5242880; // 5 MB
+    private const MAX_VIEW_TAIL_BYTES = 1048576; // 1 MB tail for large read-only files
 
     /** @var array<int, string> */
     private const CODE_EXTENSIONS = [
@@ -957,6 +958,7 @@ final class FileSystemService
             $isImage = !$isDir && in_array($ext, self::IMAGE_EXTENSIONS, true);
             $isZip = !$isDir && $ext === 'zip';
             $isEditable = !$isDir && $this->isEditableFile($name, $ext, $size);
+            $isViewable = !$isDir && !$isEditable && !$isImage && !$isZip && $this->isTextFile($itemAbs);
 
             $items[] = [
                 'name' => $name,
@@ -975,6 +977,7 @@ final class FileSystemService
                 'isImage' => $isImage,
                 'isZip' => $isZip,
                 'isEditable' => $isEditable,
+                'isViewable' => $isViewable,
             ];
         }
 
@@ -1239,7 +1242,14 @@ final class FileSystemService
      * @param string $relPath
      * @return array<string, mixed>
      */
-    public function readFileContent(string $relPath): array
+    /**
+     * Read file contents for editing or read-only viewing.
+     *
+     * @param string $relPath
+     * @param bool $readOnly
+     * @return array<string, mixed>
+     */
+    public function readFileContent(string $relPath, bool $readOnly = false): array
     {
         $abs = $this->guard->resolveExisting($relPath);
         if (!is_file($abs) || !is_readable($abs)) {
@@ -1247,13 +1257,33 @@ final class FileSystemService
         }
 
         $size = (int) filesize($abs);
-        if ($size > self::MAX_EDIT_BYTES) {
-            throw new \RuntimeException('File is too large to edit in browser (max ' . $this->formatBytes(self::MAX_EDIT_BYTES) . ').');
-        }
+        $truncated = false;
 
-        $content = @file_get_contents($abs);
-        if ($content === false) {
-            throw new \RuntimeException('Failed to read file contents.');
+        if ($size > self::MAX_EDIT_BYTES) {
+            if (!$readOnly) {
+                throw new \RuntimeException('File is too large to edit in browser (max ' . $this->formatBytes(self::MAX_EDIT_BYTES) . ').');
+            }
+            $fp = @fopen($abs, 'rb');
+            if ($fp === false) {
+                throw new \RuntimeException('Failed to open file for reading.');
+            }
+            $tailBytes = min($size, self::MAX_VIEW_TAIL_BYTES);
+            @fseek($fp, -$tailBytes, SEEK_END);
+            $content = @fread($fp, $tailBytes);
+            @fclose($fp);
+            if ($content === false) {
+                throw new \RuntimeException('Failed to read file contents.');
+            }
+            $firstNewline = strpos($content, "\n");
+            if ($firstNewline !== false && $firstNewline < 1024) {
+                $content = substr($content, $firstNewline + 1);
+            }
+            $truncated = true;
+        } else {
+            $content = @file_get_contents($abs);
+            if ($content === false) {
+                throw new \RuntimeException('Failed to read file contents.');
+            }
         }
 
         $encoding = 'UTF-8';
@@ -1264,14 +1294,19 @@ final class FileSystemService
             }
         }
 
+        $viewBytes = strlen($content);
+
         return [
             'path' => $this->guard->toRelative($abs),
             'name' => PathGuard::baseName($abs),
             'content' => $content,
             'size' => $size,
             'sizeFormatted' => $this->formatBytes($size),
+            'viewBytes' => $viewBytes,
+            'viewBytesFormatted' => $this->formatBytes($viewBytes),
+            'truncated' => $truncated,
             'encoding' => $encoding,
-            'writable' => is_writable($abs),
+            'writable' => ($readOnly || $truncated) ? false : is_writable($abs),
         ];
     }
 
@@ -1880,6 +1915,30 @@ final class FileSystemService
         }
         $lower = strtolower($name);
         return in_array($lower, ['readme', 'license', 'makefile', 'dockerfile', 'procfile'], true);
+    }
+
+    /**
+     * Lightweight check to determine whether a file is likely plain text
+     * by verifying the absence of NUL bytes in its first 4 KB.
+     *
+     * @param string $absPath
+     * @return bool
+     */
+    private function isTextFile(string $absPath): bool
+    {
+        if (!is_file($absPath) || !is_readable($absPath)) {
+            return false;
+        }
+        $fp = @fopen($absPath, 'rb');
+        if ($fp === false) {
+            return false;
+        }
+        $sample = @fread($fp, 4096);
+        @fclose($fp);
+        if ($sample === false) {
+            return false;
+        }
+        return $sample === '' || strpos($sample, "\0") === false;
     }
 
     /**
@@ -3783,7 +3842,8 @@ final class FileManagerController
 
                 case 'read':
                     $path = isset($payload['path']) ? (string) $payload['path'] : '';
-                    $this->jsonSuccess($this->fs->readFileContent($path));
+                    $readOnly = !empty($payload['readOnly']) && $payload['readOnly'] !== '0' && $payload['readOnly'] !== 'false';
+                    $this->jsonSuccess($this->fs->readFileContent($path, $readOnly));
                     break;
 
                 case 'save':
@@ -5684,6 +5744,7 @@ dialog {
         const rows = [];
         if (item.type === 'dir') rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="open">${icon('folder')} Open</button>`);
         if (item.isEditable) rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="edit">${icon('edit')} Edit</button>`);
+        else if (item.isViewable) rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="view">${icon('preview')} View</button>`);
         if (item.isImage) rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="preview">${icon('preview')} Preview</button>`);
         rows.push(`<button type="button" class="menu-item" role="menuitem" data-ctx="rename">${icon('rename')} Rename</button>`);
         rows.push('<hr class="menu-sep">');
@@ -5828,21 +5889,25 @@ dialog {
         el('editor-gutter').textContent = Array.from({ length: lines }, (_, i) => i + 1).join('\n');
     }
 
-    async function openEditor(path) {
+    async function openEditor(path, readOnly = false) {
         try {
-            const data = await api('read', { path });
+            const data = await api('read', { path, readOnly: readOnly ? '1' : '0' });
             state.editorPath = data.path;
             state.editorDirty = false;
             el('editor-title').textContent = data.name;
             const ta = el('editor-textarea');
+            const isReadOnly = readOnly || !data.writable;
             ta.value = data.content;
-            ta.readOnly = !data.writable;
+            ta.readOnly = isReadOnly;
             ta.setSelectionRange(0, 0);
             ta.scrollTop = 0;
             el('editor-gutter').scrollTop = 0;
-            el('editor-save-btn').disabled = !data.writable;
-            el('editor-save-exit-btn').disabled = !data.writable;
-            el('editor-meta').textContent = `${data.sizeFormatted} • ${data.encoding}` + (data.writable ? '' : ' • Read-only');
+            el('editor-save-btn').disabled = isReadOnly;
+            el('editor-save-exit-btn').disabled = isReadOnly;
+            let meta = `${data.sizeFormatted} • ${data.encoding}`;
+            if (isReadOnly) meta += ' • Read-only';
+            if (data.truncated) meta += ` • Showing last ${data.viewBytesFormatted} (file exceeds edit limit)`;
+            el('editor-meta').textContent = meta;
             updateEditorGutter();
             openDialog('modal-editor', ta, () => {
                 ta.setSelectionRange(0, 0);
@@ -6116,7 +6181,8 @@ dialog {
                 if (!item) return;
                 if (item.type === 'dir') loadDirectory(item.path);
                 else if (item.isImage) openPreview(item);
-                else if (item.isEditable) openEditor(item.path);
+                else if (item.isEditable) openEditor(item.path, false);
+                else if (item.isViewable) openEditor(item.path, true);
                 else window.location.href = `${BOOTSTRAP.selfUrl}?action=download&path=${encodeURIComponent(item.path)}`;
                 return;
             }
@@ -6150,7 +6216,8 @@ dialog {
             const act = btn.dataset.ctx;
             closeContextMenu();
             if (act === 'open') loadDirectory(item.path);
-            else if (act === 'edit') openEditor(item.path);
+            else if (act === 'edit') openEditor(item.path, false);
+            else if (act === 'view') openEditor(item.path, true);
             else if (act === 'preview') openPreview(item);
             else if (act === 'rename') showPrompt({ title: 'Rename Item', label: 'New name', value: item.name, submitText: 'Rename', onConfirm: async (newName) => { await api('rename', { path: item.path, newName }); toast(`Renamed to ${newName}`); loadDirectory(state.currentPath); } });
             else if (act === 'copy') promptTransfer('copy', [item.path]);
